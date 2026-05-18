@@ -14,6 +14,7 @@ What it does:
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import html
 import os
@@ -175,15 +176,27 @@ def same_domain(url1: str, url2: str) -> bool:
     return d1 == d2
 
 
-def fetch(url: str, timeout: int = 7) -> Optional[str]:
+def fetch(url: str, timeout: int = 5) -> Optional[str]:
     try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True, stream=True)
         if r.status_code >= 400:
             return None
-        # requests guesses encoding; if missing, BeautifulSoup will help, but UTF-8 preferred.
-        if not r.encoding:
-            r.encoding = "utf-8"
-        return r.text
+        content_type = r.headers.get("content-type", "").lower()
+        if "image/" in content_type or "video/" in content_type or "application/pdf" in content_type:
+            return None
+        max_bytes = 1_500_000
+        chunks = []
+        total = 0
+        for chunk in r.iter_content(chunk_size=65536):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        enc = r.encoding or "utf-8"
+        return raw.decode(enc, errors="replace")
     except Exception:
         return None
 
@@ -213,7 +226,7 @@ def extract_links(source: Source, html_text: str) -> List[str]:
         if x not in seen:
             out.append(x)
             seen.add(x)
-    return out[:45]
+    return out[:18]
 
 
 def discover_section_pages(source: Source, html_text: str) -> List[str]:
@@ -234,7 +247,7 @@ def discover_section_pages(source: Source, html_text: str) -> List[str]:
         if u not in seen and u != source.url:
             result.append(u)
             seen.add(u)
-    return result[:5]
+    return result[:2]
 
 
 def extract_article(source: Source, url: str, config: dict) -> Optional[NewsItem]:
@@ -456,9 +469,9 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
 
         # First page/main only, capped per source to avoid overload.
         seen_urls = set()
-        print(f"  candidate article links: {len(candidate_urls[:35])}", flush=True)
+        print(f"  candidate article links: {len(candidate_urls[:12])}", flush=True)
         source_found = 0
-        for url in candidate_urls[:35]:
+        for url in candidate_urls[:12]:
             if url in seen_urls:
                 continue
             seen_urls.add(url)
@@ -469,6 +482,11 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
                 found.append(item)
                 source_found += 1
         print(f"  new relevant items from {source.name}: {source_found}", flush=True)
+        try:
+            del main_html, pages, candidate_urls, seen_urls
+        except Exception:
+            pass
+        gc.collect()
 
     print(f"Scan finished. Total relevant items found: {len(found)}", flush=True)
     return found, failed

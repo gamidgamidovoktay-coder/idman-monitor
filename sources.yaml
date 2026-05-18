@@ -129,11 +129,11 @@ settings:
   digest_name: "İdman.biz — Азербайджанский спорт"
   sender_name: "Idman Monitor"
   timezone: "Asia/Baku"
-  final_rescan_seconds_before_send: 60
+  final_rescan_seconds_before_send: 0
   sent_memory_hours: 72
   max_consecutive_from_one_source: 7
   if_news_count_over_40_summary_sentences: 1
-  normal_summary_sentences: 3
+  normal_summary_sentences: 2
   exclude_keywords:
     - "букмекер"
     - "букмекеры"

@@ -1,0 +1,177 @@
+# Idman Monitor — sources for Azerbaijani sport.
+# Excluded: stadium.az, idman-az.com, goal.az, chess.az, sportmedia.az, sportlife.az
+sources:
+  - name: Azertag Sport
+    url: https://azertag.az/bolme/sports
+    group: A
+  - name: Trend Sport
+    url: https://az.trend.az/azerbaijan/sports/
+    group: A
+  - name: APA Sport
+    url: https://apa.az/sport/
+    group: A
+  - name: Report Sport
+    url: https://report.az/idman-xeberleri/
+    group: A
+  - name: Azerisport
+    url: https://www.azerisport.com/
+    group: A
+  - name: Qol.az
+    url: https://qol.az/
+    group: B
+  - name: Matc.az
+    url: https://matc.az/
+    group: B
+  - name: Football-plus.az
+    url: https://football-plus.az/
+    group: B
+  - name: Sport24.az
+    url: https://sport24.az/
+    group: B
+  - name: Sportnet.az
+    url: https://sportnet.az/
+    group: B
+  - name: Apasport
+    url: https://apasport.az/
+    group: A
+  - name: Sportal.az
+    url: https://sportal.az/
+    group: C
+  - name: Futbolinfo.az
+    url: https://futbolinfo.az/
+    group: B
+  - name: Komanda.az
+    url: https://komanda.az/
+    group: B
+  - name: Sportinfo.az
+    url: https://sportinfo.az/
+    group: C
+  - name: Sportarena.az
+    url: https://sportarena.az/
+    group: C
+  - name: Futbolpress.az
+    url: https://futbolpress.az/
+    group: B
+  - name: Fanat.az
+    url: https://fanat.az/
+    group: B
+  - name: Msport.az
+    url: https://msport.az/
+    group: C
+  - name: Sports.az
+    url: https://www.sports.az/
+    group: C
+  - name: Supersport.az
+    url: https://supersport.az/
+    group: C
+  - name: Futbolmedia.az
+    url: https://futbolmedia.az/
+    group: C
+  - name: Idmanxeber.az
+    url: https://idmanxeber.az/
+    group: B
+  - name: Futbolxeber.az
+    url: https://futbolxeber.az/
+    group: B
+  - name: Rekord.az
+    url: https://www.rekord.az/
+    group: B
+  - name: Brendsport.az
+    url: https://brendsport.az/
+    group: C
+  - name: Allsport.az
+    url: https://allsport.az/
+    group: C
+  - name: Sportline.az
+    url: https://sportline.az/
+    group: C
+  - name: Estafet.az
+    url: https://estafet.az/
+    group: D
+  - name: Offsideplus.az
+    url: https://offsideplus.az/
+    group: B
+  - name: Newsport.az
+    url: https://newsport.az/
+    group: C
+  - name: Olimpnews.az
+    url: https://olimpnews.az/
+    group: D
+  - name: Korner.az
+    url: https://korner.az/
+    group: C
+  - name: 90deqiqe.az
+    url: https://90deqiqe.az/
+    group: B
+  - name: CBC Sport
+    url: https://cbcsport.az/
+    group: D
+  - name: Sportfm.az
+    url: https://sportfm.az/
+    group: C
+  - name: Sportnews.az
+    url: https://sportnews.az/
+    group: C
+  - name: Prosport.az
+    url: https://prosport.az/
+    group: C
+  - name: Presssport.az
+    url: https://presssport.az/
+    group: C
+  - name: Pressing.az
+    url: https://pressing.az/
+    group: C
+  - name: Tour2026 Chess
+    url: https://tour2026.chess.az/
+    group: D
+
+settings:
+  digest_name: "İdman.biz — Азербайджанский спорт"
+  sender_name: "Idman Monitor"
+  timezone: "Asia/Baku"
+  final_rescan_seconds_before_send: 150
+  sent_memory_hours: 72
+  max_consecutive_from_one_source: 7
+  if_news_count_over_40_summary_sentences: 1
+  normal_summary_sentences: 3
+  exclude_keywords:
+    - "букмекер"
+    - "букмекеры"
+    - "ставки"
+    - "stavka"
+    - "bukmeker"
+  # Only Azerbaijani sport; these are soft matching hints, not strict top-word filters.
+  az_sport_hints:
+    - "азербайджан"
+    - "azerbaycan"
+    - "azerbaijan"
+    - "azərbaycan"
+    - "qarabağ"
+    - "qarabag"
+    - "karabakh"
+    - "карабах"
+    - "neftçi"
+    - "neftchi"
+    - "нефтчи"
+    - "sabah"
+    - "zira"
+    - "zirə"
+    - "qəbələ"
+    - "gabala"
+    - "сборная"
+    - "millimiz"
+    - "yığma"
+    - "federasiya"
+    - "federation"
+    - "чемпионат азербайджана"
+    - "misli"
+  sport_emoji:
+    football: "⚽"
+    futsal: "⚽"
+    basketball: "🏀"
+    volleyball: "🏐"
+    mma: "🥋"
+    judo: "🥋"
+    wrestling: "🤼"
+    chess: "♟️"
+    other: "🏅"

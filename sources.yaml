@@ -131,9 +131,11 @@ settings:
   timezone: "Asia/Baku"
   final_rescan_seconds_before_send: 0
   sent_memory_hours: 72
+  fresh_window_minutes: 60
   max_consecutive_from_one_source: 7
   if_news_count_over_40_summary_sentences: 1
   normal_summary_sentences: 2
+  max_items_per_email: 50
   exclude_keywords:
     - "букмекер"
     - "букмекеры"

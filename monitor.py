@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-Idman Monitor
-A lightweight news-monitoring script for Azerbaijani sports sources.
+Idman Monitor v4
 
-What it does:
-- Scans configured sites.
-- Performs a final rescan ~2-3 minutes before sending.
-- Keeps SQLite memory so already sent news is not repeated.
-- Deduplicates by URL and by similar meaning/title.
-- Keeps original language in title and summary.
-- Sends digest by email through Gmail SMTP.
+Редакционная версия агрегатора для азербайджанского спорта.
+
+Что делает:
+- Один проход без Final scan.
+- Берёт только новости в окне 60 минут.
+- Не повторяет уже отправленные новости между запусками.
+- Отсекает страницы разделов/категорий/служебные страницы.
+- Дедуплицирует одинаковые новости внутри письма.
+- Разделяет письмо на "Футбол" и "Другие виды спорта".
+- Даёт приоритет важным новостям: трансферы, травмы, сборная, еврокубки,
+  скандалы/решения, интервью.
+- Лимит: максимум 50 новостей в письме.
+- Мелкие сайты не отключает, но ограничивает шум.
 """
 
 from __future__ import annotations
@@ -21,25 +26,25 @@ import os
 import re
 import smtplib
 import sqlite3
-import sys
 import time
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse, urldefrag
 
 import requests
 import yaml
-import warnings
-from bs4 import XMLParsedAsHTMLWarning
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from dateutil import parser as dateparser
 from rapidfuzz import fuzz
 from zoneinfo import ZoneInfo
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 CONFIG_PATH = Path(os.getenv("CONFIG_PATH", "sources.yaml"))
 DB_PATH = Path(os.getenv("DB_PATH", "idman_monitor.sqlite3"))
@@ -51,23 +56,57 @@ SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
 EMAIL_TO = [x.strip() for x in os.getenv("EMAIL_TO", "").split(",") if x.strip()]
 
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
-
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; IdmanMonitor/1.0; +https://idman.biz)"
-    ),
+    "User-Agent": "Mozilla/5.0 (compatible; IdmanMonitor/4.0; +https://idman.biz)",
     "Accept-Language": "az,ru,en;q=0.9",
 }
 
+# Links that usually mean this is a real article path, not a section/listing.
 ARTICLE_PATH_HINTS = [
-    "/news/", "/xeber/", "/idman/", "/sport/", "/futbol/", "/football/",
-    "/az/", "/ru/", "/a/", "/post/", "/article/"
+    "/news/", "/xeber/", "/idman_xeberleri/", "/post/", "/article/",
+    "/2025/", "/2026/", "/az/", "/ru/", "/a=", "/futbol/", "/bizim-futbol/",
 ]
 
 SECTION_HINTS = [
     "sport", "idman", "futbol", "football", "basketbol", "voleybol",
     "mma", "ufc", "gules", "güləş", "judo", "cüdo", "chess", "şahmat"
+]
+
+BAD_URL_PATTERNS = [
+    "/category/", "/categories/", "/news/premyer-liqa", "/misli",
+    "/azerbaycanf", "/business/", "/economy/", "/weather", "/army",
+    "/media", "/science-and-education", "/tag/", "/author/", "/page/",
+    "/search", "/contact", "/about", "/reklam", "/advert", "/privacy",
+]
+
+BAD_TITLE_PATTERNS = [
+    "günün son xəbərləri", "hərbi xəbərlər", "media xəbərləri",
+    "hava haqqında xəbərlər", "biznes və iqtisadiyyat xəbərləri",
+    "misli premyer liqa |", "azərbaycan futbolu »", "sportnet.az",
+]
+
+HIGH_PRIORITY_KEYWORDS = [
+    # transfers / contracts
+    "transfer", "müqavilə", "müqavilə imzaladı", "qadağa", "qadağası",
+    "danışıqları", "qayıda bilər", "gedir", "ayrıldı", "vidalaşdı",
+    "keçdi", "satıldı", "alındı",
+    # injuries
+    "zədə", "zədələn", "travma", "xəsarət", "əməliyyat",
+    # national team
+    "millimiz", "milli", "yığma", "sборная", "azerbaijan national",
+    # European cups / UEFA
+    "avrokubok", "çempionlar liqası", "avropa liqası", "konfrans liqası",
+    "uefa", "rəqib", "püşk",
+    # scandals / decisions
+    "qalmaqal", "skandal", "qərar", "cəza", "fifa", "affa", "hakim",
+    "şikayət", "apellyasiya",
+    # interviews
+    "müsahibə", "interview", "açıqlama", "dedi", "bildirdi",
+]
+
+MEDIUM_PRIORITY_KEYWORDS = [
+    "qalib", "məğlub", "tur", "nəticə", "çempionat", "kubok",
+    "medal", "start", "yekun", "heyət", "siyahı", "hazırlıq",
 ]
 
 @dataclass
@@ -85,6 +124,8 @@ class NewsItem:
     published_at: Optional[datetime]
     first_seen_at: datetime
     sport_type: str
+    topic: str
+    priority: int
     raw_text: str
 
 
@@ -130,27 +171,22 @@ def normalize_text(text: str) -> str:
 
 def semantic_key(title: str) -> str:
     t = normalize_text(title).lower()
-    # Normalize common spellings.
     replacements = {
-        "qarabağ": "karabakh",
-        "qarabag": "karabakh",
-        "карабах": "karabakh",
-        "neftçi": "neftchi",
-        "нефтчи": "neftchi",
-        "azərbaycan": "azerbaijan",
-        "azerbaycan": "azerbaijan",
-        "азербайджан": "azerbaijan",
-        "güləş": "wrestling",
-        "борьба": "wrestling",
-        "cüdo": "judo",
-        "дзюдо": "judo",
+        "qarabağ": "karabakh", "qarabag": "karabakh", "карабах": "karabakh",
+        "neftçi": "neftchi", "нефтчи": "neftchi",
+        "azərbaycan": "azerbaijan", "azerbaycan": "azerbaijan", "азербайджан": "azerbaijan",
+        "güləş": "wrestling", "борьба": "wrestling",
+        "cüdo": "judo", "дзюдо": "judo",
+        "çempionlar liqası": "champions league",
+        "avropa liqası": "europa league",
+        "konfrans liqası": "conference league",
     }
     for a, b in replacements.items():
         t = t.replace(a, b)
     t = re.sub(r"[^\w\s]", " ", t, flags=re.UNICODE)
     stop = {
-        "и", "в", "на", "о", "об", "the", "a", "an", "of", "to", "az", "ru",
-        "ve", "və", "bu", "ilə", "üçün", "sonra", "deyib", "bildirib"
+        "və", "ve", "ilə", "üçün", "olan", "oldu", "deyib", "bildirib",
+        "the", "and", "for", "from", "with", "и", "на", "по", "для", "что",
     }
     tokens = [x for x in t.split() if len(x) > 2 and x not in stop]
     return " ".join(tokens[:18])
@@ -181,9 +217,10 @@ def fetch(url: str, timeout: int = 5) -> Optional[str]:
         r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True, stream=True)
         if r.status_code >= 400:
             return None
-        content_type = r.headers.get("content-type", "").lower()
-        if "image/" in content_type or "video/" in content_type or "application/pdf" in content_type:
+        ctype = r.headers.get("content-type", "").lower()
+        if "image/" in ctype or "video/" in ctype or "application/pdf" in ctype:
             return None
+
         max_bytes = 1_500_000
         chunks = []
         total = 0
@@ -194,11 +231,24 @@ def fetch(url: str, timeout: int = 5) -> Optional[str]:
             if total > max_bytes:
                 return None
             chunks.append(chunk)
+
         raw = b"".join(chunks)
         enc = r.encoding or "utf-8"
         return raw.decode(enc, errors="replace")
     except Exception:
         return None
+
+
+def looks_like_bad_url(url: str) -> bool:
+    low = url.lower()
+    return any(p in low for p in BAD_URL_PATTERNS)
+
+
+def looks_like_article_url(url: str) -> bool:
+    low = url.lower()
+    if looks_like_bad_url(url):
+        return False
+    return any(h in low for h in ARTICLE_PATH_HINTS)
 
 
 def extract_links(source: Source, html_text: str) -> List[str]:
@@ -211,15 +261,16 @@ def extract_links(source: Source, html_text: str) -> List[str]:
             continue
         if not same_domain(source.url, url):
             continue
-        low = url.lower()
-        txt = normalize_text(a.get_text(" ")).lower()
-        # Keep likely articles and section links. Avoid obvious assets/admin links.
-        if any(x in low for x in ["/wp-admin", "/login", ".jpg", ".png", ".pdf", "#"]):
+        if looks_like_bad_url(url):
             continue
-        if any(h in low for h in ARTICLE_PATH_HINTS) or len(txt) >= 20:
+
+        txt = normalize_text(a.get_text(" "))
+        low_url = url.lower()
+
+        # Do not collect section/listing pages as articles.
+        if looks_like_article_url(url) or len(txt) >= 25:
             links.append(url)
 
-    # Preserve order, unique.
     seen = set()
     out = []
     for x in links:
@@ -231,88 +282,44 @@ def extract_links(source: Source, html_text: str) -> List[str]:
 
 def discover_section_pages(source: Source, html_text: str) -> List[str]:
     soup = BeautifulSoup(html_text, "html.parser")
-    sections = []
+    result = []
+    seen = set()
     for a in soup.find_all("a", href=True):
         txt = normalize_text(a.get_text(" ")).lower()
         url = clean_url(source.url, a.get("href", ""))
         if not url or not same_domain(source.url, url):
             continue
+        if looks_like_bad_url(url):
+            continue
         low = url.lower()
         if any(h in txt or h in low for h in SECTION_HINTS):
-            sections.append(url)
-    # main + first page of each section only, capped
-    result = []
-    seen = set()
-    for u in sections:
-        if u not in seen and u != source.url:
-            result.append(u)
-            seen.add(u)
+            if url not in seen and url != source.url:
+                result.append(url)
+                seen.add(url)
     return result[:2]
 
 
-def extract_article(source: Source, url: str, config: dict) -> Optional[NewsItem]:
-    html_text = fetch(url)
-    if not html_text:
-        return None
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    title = ""
-    if soup.find("meta", property="og:title"):
-        title = soup.find("meta", property="og:title").get("content", "")
-    if not title and soup.find("h1"):
-        title = soup.find("h1").get_text(" ")
-    if not title and soup.title:
-        title = soup.title.get_text(" ")
-
-    title = normalize_text(title)
-    if len(title) < 8:
-        return None
-
-    desc = ""
-    for selector in [
-        ("meta", {"property": "og:description"}),
-        ("meta", {"name": "description"}),
-    ]:
-        tag = soup.find(*selector)
-        if tag:
-            desc = tag.get("content", "")
-            break
-
-    if not desc:
-        paragraphs = [normalize_text(p.get_text(" ")) for p in soup.find_all("p")]
-        paragraphs = [p for p in paragraphs if len(p) > 25]
-        desc = " ".join(paragraphs[:3])
-
-    desc = summarize_essence(desc, config["settings"].get("normal_summary_sentences", 3))
-    raw_text = normalize_text(f"{title} {desc}")
-
-    if is_excluded(raw_text, config):
-        return None
-    if not is_azerbaijani_sport(raw_text, config):
-        return None
-
-    published_at = parse_published_time(soup, config)
-    sport_type = detect_sport_type(raw_text)
-
-    return NewsItem(
-        source=source,
-        url=url,
-        title=title,
-        description=desc,
-        published_at=published_at,
-        first_seen_at=datetime.now(ZoneInfo(config["settings"]["timezone"])),
-        sport_type=sport_type,
-        raw_text=raw_text,
-    )
+def summarize_essence(text: str, max_sentences: int = 2) -> str:
+    text = normalize_text(text)
+    if not text:
+        return ""
+    parts = re.split(r"(?<=[.!?։۔])\s+", text)
+    parts = [p.strip() for p in parts if len(p.strip()) > 10]
+    if not parts:
+        return text[:350]
+    return " ".join(parts[:max_sentences])[:600]
 
 
 def parse_published_time(soup: BeautifulSoup, config: dict) -> Optional[datetime]:
+    tz = ZoneInfo(config["settings"]["timezone"])
     candidates = []
+
     for attrs in [
         {"property": "article:published_time"},
         {"name": "pubdate"},
         {"name": "publishdate"},
         {"itemprop": "datePublished"},
+        {"property": "og:updated_time"},
     ]:
         tag = soup.find("meta", attrs=attrs)
         if tag and tag.get("content"):
@@ -324,7 +331,6 @@ def parse_published_time(soup: BeautifulSoup, config: dict) -> Optional[datetime
         else:
             candidates.append(time_tag.get_text(" "))
 
-    tz = ZoneInfo(config["settings"]["timezone"])
     for c in candidates:
         try:
             dt = dateparser.parse(c, fuzzy=True)
@@ -338,24 +344,17 @@ def parse_published_time(soup: BeautifulSoup, config: dict) -> Optional[datetime
     return None
 
 
-def summarize_essence(text: str, max_sentences: int) -> str:
-    text = normalize_text(text)
-    if not text:
-        return ""
-    parts = re.split(r"(?<=[.!?։۔])\s+", text)
-    parts = [p.strip() for p in parts if len(p.strip()) > 10]
-    if not parts:
-        return text[:350]
-    summary = " ".join(parts[:max_sentences])
-    return summary[:700]
-
-
 def is_excluded(text: str, config: dict) -> bool:
     low = text.lower()
     for kw in config["settings"].get("exclude_keywords", []):
         if kw.lower() in low:
             return True
     return False
+
+
+def is_bad_title(title: str) -> bool:
+    low = title.lower()
+    return any(p in low for p in BAD_TITLE_PATTERNS)
 
 
 def is_azerbaijani_sport(text: str, config: dict) -> bool:
@@ -367,11 +366,11 @@ def is_azerbaijani_sport(text: str, config: dict) -> bool:
 def detect_sport_type(text: str) -> str:
     low = text.lower()
     mapping = [
-        ("football", ["futbol", "football", "футбол", "premyer liqa", "misli", "qarabağ", "neftçi", "zirə"]),
+        ("football", ["futbol", "football", "футбол", "premyer liqa", "misli", "qarabağ", "neftçi", "zirə", "sabah", "qəbələ"]),
         ("futsal", ["futzal", "futsal", "мини-футбол"]),
         ("basketball", ["basketbol", "basketball", "баскетбол"]),
         ("volleyball", ["voleybol", "volleyball", "волейбол"]),
-        ("mma", ["mma", "ufc", "bellator", "октагон"]),
+        ("mma", ["mma", "ufc", "bellator", "oktaqon", "октагон"]),
         ("judo", ["cüdo", "judo", "дзюдо"]),
         ("wrestling", ["güləş", "wrestling", "борьба", "güləşçi"]),
         ("chess", ["şahmat", "chess", "шахмат"]),
@@ -382,6 +381,97 @@ def detect_sport_type(text: str) -> str:
     return "other"
 
 
+def topic_for_sport(sport_type: str) -> str:
+    return "football" if sport_type in {"football", "futsal"} else "other"
+
+
+def determine_priority(text: str) -> int:
+    low = text.lower()
+    if any(k in low for k in HIGH_PRIORITY_KEYWORDS):
+        return 0
+    if any(k in low for k in MEDIUM_PRIORITY_KEYWORDS):
+        return 1
+    return 2
+
+
+def is_recent_enough(item: NewsItem, config: dict) -> bool:
+    window_minutes = int(config["settings"].get("fresh_window_minutes", 60))
+    tz = ZoneInfo(config["settings"]["timezone"])
+    now = datetime.now(tz)
+    dt = item.published_at or item.first_seen_at
+    return dt >= now - timedelta(minutes=window_minutes)
+
+
+def extract_article(source: Source, url: str, config: dict) -> Optional[NewsItem]:
+    if not looks_like_article_url(url):
+        return None
+
+    html_text = fetch(url)
+    if not html_text:
+        return None
+
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    title = ""
+    og = soup.find("meta", property="og:title")
+    if og and og.get("content"):
+        title = og.get("content", "")
+    if not title and soup.find("h1"):
+        title = soup.find("h1").get_text(" ")
+    if not title and soup.title:
+        title = soup.title.get_text(" ")
+
+    title = normalize_text(title)
+    if len(title) < 8 or is_bad_title(title):
+        return None
+
+    desc = ""
+    for selector in [
+        ("meta", {"property": "og:description"}),
+        ("meta", {"name": "description"}),
+    ]:
+        tag = soup.find(*selector)
+        if tag and tag.get("content"):
+            desc = tag.get("content", "")
+            break
+
+    if not desc:
+        paragraphs = [normalize_text(p.get_text(" ")) for p in soup.find_all("p")]
+        paragraphs = [p for p in paragraphs if len(p) > 25]
+        desc = " ".join(paragraphs[:3])
+
+    desc = summarize_essence(desc, 2)
+    raw_text = normalize_text(f"{title} {desc}")
+
+    if is_excluded(raw_text, config):
+        return None
+    if not is_azerbaijani_sport(raw_text, config):
+        return None
+
+    published_at = parse_published_time(soup, config)
+    sport_type = detect_sport_type(raw_text)
+    topic = topic_for_sport(sport_type)
+    priority = determine_priority(raw_text)
+
+    item = NewsItem(
+        source=source,
+        url=url,
+        title=title,
+        description=desc,
+        published_at=published_at,
+        first_seen_at=datetime.now(ZoneInfo(config["settings"]["timezone"])),
+        sport_type=sport_type,
+        topic=topic,
+        priority=priority,
+        raw_text=raw_text,
+    )
+
+    if not is_recent_enough(item, config):
+        return None
+
+    return item
+
+
 def already_sent(conn: sqlite3.Connection, item: NewsItem, config: dict) -> bool:
     key = semantic_key(item.title)
     memory_hours = int(config["settings"].get("sent_memory_hours", 72))
@@ -390,10 +480,11 @@ def already_sent(conn: sqlite3.Connection, item: NewsItem, config: dict) -> bool
         "SELECT url, semantic_key, title FROM sent_items WHERE sent_at >= ?",
         (cutoff.isoformat(),)
     ).fetchall()
+
     if any(row[0] == item.url for row in rows):
         return True
+
     for _url, sem, title in rows:
-        # Meaning-level duplicate.
         if sem and key and fuzz.token_set_ratio(sem, key) >= 88:
             return True
         if title and fuzz.token_set_ratio(title.lower(), item.title.lower()) >= 90:
@@ -445,6 +536,7 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
 
     for idx, source in enumerate(sources, start=1):
         print(f"[{idx}/{len(sources)}] Scanning {source.name}: {source.url}", flush=True)
+
         if source.name in disabled:
             failed.append(f"{source.name} (отключён после 10 дней ошибок)")
             continue
@@ -455,35 +547,43 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
             failed.append(source.name)
             record_failure(conn, source.name)
             continue
+
         clear_failure(conn, source.name)
-        print(f"  opened", flush=True)
+        print("  opened", flush=True)
 
         pages = [source.url] + discover_section_pages(source, main_html)
-        candidate_urls: List[str] = []
         print(f"  pages to check: {len(pages)}", flush=True)
+
+        candidate_urls: List[str] = []
         for page in pages:
             page_html = main_html if page == source.url else fetch(page)
             if not page_html:
                 continue
             candidate_urls.extend(extract_links(source, page_html))
 
-        # First page/main only, capped per source to avoid overload.
-        seen_urls = set()
-        print(f"  candidate article links: {len(candidate_urls[:12])}", flush=True)
+        # Keep order, unique.
+        unique_candidates = []
+        seen = set()
+        for u in candidate_urls:
+            if u not in seen:
+                unique_candidates.append(u)
+                seen.add(u)
+
+        print(f"  candidate article links: {len(unique_candidates[:12])}", flush=True)
+
         source_found = 0
-        for url in candidate_urls[:12]:
-            if url in seen_urls:
-                continue
-            seen_urls.add(url)
+        for url in unique_candidates[:12]:
             item = extract_article(source, url, config)
             if not item:
                 continue
             if not already_sent(conn, item, config):
                 found.append(item)
                 source_found += 1
+
         print(f"  new relevant items from {source.name}: {source_found}", flush=True)
+
         try:
-            del main_html, pages, candidate_urls, seen_urls
+            del main_html, pages, candidate_urls, unique_candidates, seen
         except Exception:
             pass
         gc.collect()
@@ -493,58 +593,43 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
 
 
 def dedupe_batch(items: List[NewsItem]) -> List[Tuple[NewsItem, List[NewsItem]]]:
-    """Return primary item + duplicate/same-meaning items from this batch."""
     groups: List[Tuple[NewsItem, List[NewsItem]]] = []
+
     for item in items:
         placed = False
         key = semantic_key(item.title)
+
         for primary, dupes in groups:
             pkey = semantic_key(primary.title)
             if fuzz.token_set_ratio(key, pkey) >= 88 or fuzz.token_set_ratio(item.title, primary.title) >= 90:
                 dupes.append(item)
                 placed = True
                 break
+
         if not placed:
             groups.append((item, []))
 
-    # Primary source = the one where same news appeared earliest by publication time, fallback first seen.
-    fixed_groups = []
+    fixed = []
     for primary, dupes in groups:
         all_items = [primary] + dupes
         all_items.sort(key=lambda x: x.published_at or x.first_seen_at)
-        fixed_groups.append((all_items[0], all_items[1:]))
-    return fixed_groups
+        fixed.append((all_items[0], all_items[1:]))
+    return fixed
 
 
 def order_groups(groups: List[Tuple[NewsItem, List[NewsItem]]]) -> List[Tuple[NewsItem, List[NewsItem]]]:
-    priority = {
-        "football": 0, "futsal": 1, "basketball": 2, "volleyball": 3,
-        "mma": 4, "judo": 5, "wrestling": 6, "chess": 7, "other": 8
-    }
     return sorted(
         groups,
         key=lambda g: (
-            -(g[0].published_at or g[0].first_seen_at).timestamp(),
-            priority.get(g[0].sport_type, 9)
+            g[0].topic != "football",                 # football first
+            g[0].priority,                            # important first
+            -(g[0].published_at or g[0].first_seen_at).timestamp(),  # newest first
         )
     )
 
 
-def apply_consecutive_source_limit(groups: List[Tuple[NewsItem, List[NewsItem]]], limit: int) -> List[Tuple[NewsItem, List[NewsItem]]]:
-    # Soft reshuffle to avoid 7+ consecutive items from same source.
-    result: List[Tuple[NewsItem, List[NewsItem]]] = []
-    pool = groups[:]
-    while pool:
-        candidate_idx = 0
-        if len(result) >= limit:
-            last_sources = [g[0].source.name for g in result[-limit:]]
-            if len(set(last_sources)) == 1:
-                for i, g in enumerate(pool):
-                    if g[0].source.name != last_sources[0]:
-                        candidate_idx = i
-                        break
-        result.append(pool.pop(candidate_idx))
-    return result
+def trim_groups(groups: List[Tuple[NewsItem, List[NewsItem]]], max_items: int) -> List[Tuple[NewsItem, List[NewsItem]]]:
+    return groups[:max_items]
 
 
 def format_dt(dt: Optional[datetime], fallback: datetime, tz_name: str) -> str:
@@ -553,58 +638,74 @@ def format_dt(dt: Optional[datetime], fallback: datetime, tz_name: str) -> str:
     return d.strftime("%H:%M")
 
 
+def priority_label(priority: int) -> str:
+    if priority == 0:
+        return "🔥 Важно"
+    if priority == 1:
+        return "🟡 Среднее"
+    return "⚪ Низкое"
+
+
 def build_email(config: dict, groups: List[Tuple[NewsItem, List[NewsItem]]], failed: List[str]) -> Tuple[str, str, str]:
     tz_name = config["settings"]["timezone"]
     now = datetime.now(ZoneInfo(tz_name))
     subject = f"{config['settings']['digest_name']} — {now.strftime('%H:%M')}"
     emoji_map = config["settings"].get("sport_emoji", {})
 
-    news_count = len(groups)
-    max_sentences = (
-        config["settings"].get("if_news_count_over_40_summary_sentences", 1)
-        if news_count > 40 else
-        config["settings"].get("normal_summary_sentences", 3)
-    )
-
     lines_text = [subject, ""]
     lines_html = [f"<h2>{html.escape(subject)}</h2>"]
 
-    for primary, dupes in groups:
-        emoji = emoji_map.get(primary.sport_type, emoji_map.get("other", "🏅"))
-        time_s = format_dt(primary.published_at, primary.first_seen_at, tz_name)
-        desc = summarize_essence(primary.description, max_sentences)
-        also_sources = [d.source.name for d in dupes if d.source.name != primary.source.name]
-        also_unique = []
-        for s in also_sources:
-            if s not in also_unique:
-                also_unique.append(s)
+    sections = [
+        ("football", "⚽ Футбол"),
+        ("other", "🏅 Другие виды спорта"),
+    ]
 
-        exclusive = " — пока только один источник" if not also_unique else ""
-        also_text = ""
-        if also_unique:
-            shown = ", ".join(also_unique[:3])
-            extra = len(also_unique) - 3
-            also_text = f"Также: {shown}" + (f" (+{extra})" if extra > 0 else "")
+    for topic_key, section_title in sections:
+        section_groups = [g for g in groups if g[0].topic == topic_key]
+        if not section_groups:
+            continue
 
-        lines_text.extend([
-            f"{emoji} {time_s}{exclusive}",
-            primary.title,
-            desc,
-            f"Источник: {primary.source.name}",
-        ])
-        if also_text:
-            lines_text.append(also_text)
-        lines_text.append(primary.url)
-        lines_text.append("")
+        lines_text.extend([section_title, ""])
+        lines_html.append(f"<h3>{html.escape(section_title)}</h3>")
 
-        lines_html.append(
-            f"<p><strong>{emoji} {time_s}{html.escape(exclusive)}</strong><br>"
-            f"<strong>{html.escape(primary.title)}</strong><br>"
-            f"{html.escape(desc)}<br>"
-            f"Источник: {html.escape(primary.source.name)}<br>"
-            + (f"{html.escape(also_text)}<br>" if also_text else "")
-            + f'<a href="{html.escape(primary.url)}">{html.escape(primary.url)}</a></p>'
-        )
+        for primary, dupes in section_groups:
+            emoji = emoji_map.get(primary.sport_type, emoji_map.get("other", "🏅"))
+            time_s = format_dt(primary.published_at, primary.first_seen_at, tz_name)
+            desc = summarize_essence(primary.description, 2)
+
+            also_sources = []
+            for d in dupes:
+                if d.source.name != primary.source.name and d.source.name not in also_sources:
+                    also_sources.append(d.source.name)
+
+            also_text = ""
+            if also_sources:
+                shown = ", ".join(also_sources[:3])
+                extra = len(also_sources) - 3
+                also_text = f"Также: {shown}" + (f" (+{extra})" if extra > 0 else "")
+
+            plabel = priority_label(primary.priority)
+            lines_text.extend([
+                f"{emoji} {time_s} — {plabel}",
+                primary.title,
+                desc,
+                f"Источник: {primary.source.name}" + (f" (+{len(also_sources)})" if also_sources else ""),
+            ])
+            if also_text:
+                lines_text.append(also_text)
+            lines_text.append(primary.url)
+            lines_text.append("")
+
+            lines_html.append(
+                f"<p><strong>{emoji} {time_s} — {html.escape(plabel)}</strong><br>"
+                f"<strong>{html.escape(primary.title)}</strong><br>"
+                f"{html.escape(desc)}<br>"
+                f"Источник: {html.escape(primary.source.name)}"
+                + (f" (+{len(also_sources)})" if also_sources else "")
+                + "<br>"
+                + (f"{html.escape(also_text)}<br>" if also_text else "")
+                + f'<a href="{html.escape(primary.url)}">{html.escape(primary.url)}</a></p>'
+            )
 
     if failed:
         lines_text.append("⚠️ Не удалось открыть:")
@@ -622,6 +723,8 @@ def send_email(config: dict, subject: str, text_body: str, html_body: str) -> No
         print("Email env vars are missing. Set SMTP_USER, SMTP_APP_PASSWORD, EMAIL_TO.", flush=True)
         return
 
+    print(f"Sending email to: {', '.join(EMAIL_TO)}", flush=True)
+
     msg = MIMEMultipart("alternative")
     sender_name = config["settings"].get("sender_name", "Idman Monitor")
     msg["From"] = formataddr((sender_name, EMAIL_FROM or SMTP_USER))
@@ -631,7 +734,6 @@ def send_email(config: dict, subject: str, text_body: str, html_body: str) -> No
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    print(f"Sending email to: {', '.join(EMAIL_TO)}", flush=True)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USER, SMTP_APP_PASSWORD)
@@ -642,28 +744,15 @@ def main() -> int:
     config = load_config()
     conn = init_db()
 
-    print("First scan...", flush=True)
-    items1, failed1 = scan_once(config, conn)
+    print("Idman Monitor v4 started", flush=True)
+    items, failed = scan_once(config, conn)
 
-    wait = int(config["settings"].get("final_rescan_seconds_before_send", 150))
-    if wait > 0:
-        print(f"Waiting {wait} seconds before final rescan...", flush=True)
-        time.sleep(wait)
-
-    print("Final scan...", flush=True)
-    items2, failed2 = scan_once(config, conn)
-
-    all_items = items1 + items2
-    groups = dedupe_batch(all_items)
+    groups = dedupe_batch(items)
     groups = order_groups(groups)
-    groups = apply_consecutive_source_limit(
-        groups, int(config["settings"].get("max_consecutive_from_one_source", 7))
-    )
-
-    failed = failed1 + failed2
+    max_items = int(config["settings"].get("max_items_per_email", 50))
+    groups = trim_groups(groups, max_items)
 
     if not groups:
-        # If no news: normally send nothing. But if no news for 2-3 hours can be added later.
         print("No new items. No email sent.", flush=True)
         if failed:
             print("Failed sources:", ", ".join(sorted(set(failed))), flush=True)
@@ -672,7 +761,7 @@ def main() -> int:
     subject, text_body, html_body = build_email(config, groups, failed)
     send_email(config, subject, text_body, html_body)
 
-    # Mark only after successful send attempt.
+    # Mark primary items as sent after email was sent.
     mark_sent(conn, [g[0] for g in groups], config)
     print(f"Sent digest with {len(groups)} news items.", flush=True)
     return 0

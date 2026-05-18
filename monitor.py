@@ -33,6 +33,8 @@ from urllib.parse import urljoin, urlparse, urldefrag
 
 import requests
 import yaml
+import warnings
+from bs4 import XMLParsedAsHTMLWarning
 from bs4 import BeautifulSoup
 from dateutil import parser as dateparser
 from rapidfuzz import fuzz
@@ -47,6 +49,8 @@ SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_APP_PASSWORD = os.getenv("SMTP_APP_PASSWORD", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
 EMAIL_TO = [x.strip() for x in os.getenv("EMAIL_TO", "").split(",") if x.strip()]
+
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 HEADERS = {
     "User-Agent": (
@@ -171,7 +175,7 @@ def same_domain(url1: str, url2: str) -> bool:
     return d1 == d2
 
 
-def fetch(url: str, timeout: int = 20) -> Optional[str]:
+def fetch(url: str, timeout: int = 7) -> Optional[str]:
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
         if r.status_code >= 400:
@@ -209,7 +213,7 @@ def extract_links(source: Source, html_text: str) -> List[str]:
         if x not in seen:
             out.append(x)
             seen.add(x)
-    return out[:150]
+    return out[:45]
 
 
 def discover_section_pages(source: Source, html_text: str) -> List[str]:
@@ -230,7 +234,7 @@ def discover_section_pages(source: Source, html_text: str) -> List[str]:
         if u not in seen and u != source.url:
             result.append(u)
             seen.add(u)
-    return result[:12]
+    return result[:5]
 
 
 def extract_article(source: Source, url: str, config: dict) -> Optional[NewsItem]:
@@ -426,20 +430,24 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
     found: List[NewsItem] = []
     failed: List[str] = []
 
-    for source in sources:
+    for idx, source in enumerate(sources, start=1):
+        print(f"[{idx}/{len(sources)}] Scanning {source.name}: {source.url}", flush=True)
         if source.name in disabled:
             failed.append(f"{source.name} (отключён после 10 дней ошибок)")
             continue
 
         main_html = fetch(source.url)
         if not main_html:
+            print(f"  FAILED: cannot open {source.name}", flush=True)
             failed.append(source.name)
             record_failure(conn, source.name)
             continue
         clear_failure(conn, source.name)
+        print(f"  opened", flush=True)
 
         pages = [source.url] + discover_section_pages(source, main_html)
         candidate_urls: List[str] = []
+        print(f"  pages to check: {len(pages)}", flush=True)
         for page in pages:
             page_html = main_html if page == source.url else fetch(page)
             if not page_html:
@@ -448,7 +456,9 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
 
         # First page/main only, capped per source to avoid overload.
         seen_urls = set()
-        for url in candidate_urls[:120]:
+        print(f"  candidate article links: {len(candidate_urls[:35])}", flush=True)
+        source_found = 0
+        for url in candidate_urls[:35]:
             if url in seen_urls:
                 continue
             seen_urls.add(url)
@@ -457,7 +467,10 @@ def scan_once(config: dict, conn: sqlite3.Connection) -> Tuple[List[NewsItem], L
                 continue
             if not already_sent(conn, item, config):
                 found.append(item)
+                source_found += 1
+        print(f"  new relevant items from {source.name}: {source_found}", flush=True)
 
+    print(f"Scan finished. Total relevant items found: {len(found)}", flush=True)
     return found, failed
 
 
@@ -588,7 +601,7 @@ def build_email(config: dict, groups: List[Tuple[NewsItem, List[NewsItem]]], fai
 
 def send_email(config: dict, subject: str, text_body: str, html_body: str) -> None:
     if not SMTP_USER or not SMTP_APP_PASSWORD or not EMAIL_TO:
-        print("Email env vars are missing. Set SMTP_USER, SMTP_APP_PASSWORD, EMAIL_TO.")
+        print("Email env vars are missing. Set SMTP_USER, SMTP_APP_PASSWORD, EMAIL_TO.", flush=True)
         return
 
     msg = MIMEMultipart("alternative")
@@ -600,6 +613,7 @@ def send_email(config: dict, subject: str, text_body: str, html_body: str) -> No
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
+    print(f"Sending email to: {', '.join(EMAIL_TO)}", flush=True)
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
         server.starttls()
         server.login(SMTP_USER, SMTP_APP_PASSWORD)
@@ -610,15 +624,15 @@ def main() -> int:
     config = load_config()
     conn = init_db()
 
-    print("First scan...")
+    print("First scan...", flush=True)
     items1, failed1 = scan_once(config, conn)
 
     wait = int(config["settings"].get("final_rescan_seconds_before_send", 150))
     if wait > 0:
-        print(f"Waiting {wait} seconds before final rescan...")
+        print(f"Waiting {wait} seconds before final rescan...", flush=True)
         time.sleep(wait)
 
-    print("Final scan...")
+    print("Final scan...", flush=True)
     items2, failed2 = scan_once(config, conn)
 
     all_items = items1 + items2
@@ -632,9 +646,9 @@ def main() -> int:
 
     if not groups:
         # If no news: normally send nothing. But if no news for 2-3 hours can be added later.
-        print("No new items. No email sent.")
+        print("No new items. No email sent.", flush=True)
         if failed:
-            print("Failed sources:", ", ".join(sorted(set(failed))))
+            print("Failed sources:", ", ".join(sorted(set(failed))), flush=True)
         return 0
 
     subject, text_body, html_body = build_email(config, groups, failed)
@@ -642,7 +656,7 @@ def main() -> int:
 
     # Mark only after successful send attempt.
     mark_sent(conn, [g[0] for g in groups], config)
-    print(f"Sent digest with {len(groups)} news items.")
+    print(f"Sent digest with {len(groups)} news items.", flush=True)
     return 0
 
 

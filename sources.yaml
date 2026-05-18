@@ -129,7 +129,7 @@ settings:
   digest_name: "İdman.biz — Азербайджанский спорт"
   sender_name: "Idman Monitor"
   timezone: "Asia/Baku"
-  final_rescan_seconds_before_send: 150
+  final_rescan_seconds_before_send: 60
   sent_memory_hours: 72
   max_consecutive_from_one_source: 7
   if_news_count_over_40_summary_sentences: 1

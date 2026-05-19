@@ -18,9 +18,9 @@ from rapidfuzz import fuzz
 from zoneinfo import ZoneInfo
 
 try:
-    import pg8000
+    import pg8000.dbapi as pgdb
 except Exception:
-    pg8000 = None
+    pgdb = None
 
 warnings.filterwarnings('ignore', category=XMLParsedAsHTMLWarning)
 
@@ -65,7 +65,7 @@ class DB:
     def __init__(self):
         self.is_pg = bool(DATABASE_URL and pg8000)
         if self.is_pg:
-            self.conn = pg8000.connect(DATABASE_URL, sslmode='require')
+            self.conn = pgdb.connect(user=parsed.username, password=parsed.password, host=parsed.hostname, port=parsed.port or 5432, database=parsed.path.lstrip('/'), ssl_context=True)
             self.conn.autocommit = True
         else:
             self.conn = sqlite3.connect(DB_PATH)
@@ -332,7 +332,7 @@ def send_email(config,subject,text_body,html_body):
 
 def main():
     config=load_config(); db=init_db()
-    print('Idman Monitor v5 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
+    print('Idman Monitor v5.2 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
     if not db.is_pg: print('WARNING: set DATABASE_URL for reliable memory on Render Cron.', flush=True)
     found,failed=scan(config,db); print(f'Added to pending queue: {add_pending(db,found)}', flush=True)
     pend=pending_items(db,config); print(f'Pending queue size: {len(pend)}', flush=True)

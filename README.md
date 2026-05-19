@@ -16,3 +16,10 @@
 Исправление PostgreSQL-драйвера:
 - `psycopg2-binary` заменён на `pg8000`, потому что `psycopg2-binary` падал в Render на Python 3.14.
 - Остальная логика v5 сохранена: постоянная память, очередь pending, окно 60 минут, без Final scan.
+
+
+## v5.2
+
+Fix:
+- Removed invalid `pg8000.connect(DATABASE_URL, sslmode='require')`.
+- Now parses DATABASE_URL and connects with `pg8000.dbapi.connect(..., ssl_context=True)`.

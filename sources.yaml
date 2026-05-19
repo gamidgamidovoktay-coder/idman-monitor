@@ -126,6 +126,7 @@ sources:
     group: D
 
 settings:
+  pending_backlog_minutes: 180
   digest_name: "İdman.biz — Азербайджанский спорт"
   sender_name: "Idman Monitor"
   timezone: "Asia/Baku"

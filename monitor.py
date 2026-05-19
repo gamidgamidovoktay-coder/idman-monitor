@@ -66,7 +66,7 @@ class DB:
         self.is_pg = bool(DATABASE_URL and pgdb)
         if self.is_pg:
             parsed = urlparse(DATABASE_URL)
-            ssl_ctx = ssl.create_default_context()
+            ssl_ctx = ssl._create_unverified_context()
             self.conn = pgdb.connect(
                 user=parsed.username,
                 password=parsed.password,
@@ -77,19 +77,28 @@ class DB:
             )
             self.conn.autocommit = True
         else:
+            if DATABASE_URL and not pgdb:
+                print("DATABASE_URL set, but pg8000 is not installed. Falling back to SQLite.", flush=True)
             self.conn = sqlite3.connect(DB_PATH)
 
-    def q(self, sql, params=()):
-        if self.is_pg:
-            sql = sql.replace("?", "%s")
+    def _convert_sql(self, sql: str) -> str:
+        if not self.is_pg:
+            return sql
+        return sql.replace("?", "%s").replace("ON CONFLICT(url) DO NOTHING", "ON CONFLICT (url) DO NOTHING")
+
+    def execute(self, sql: str, params: tuple = ()):
         cur = self.conn.cursor()
-        cur.execute(sql, params)
+        cur.execute(self._convert_sql(sql), params)
         if not self.is_pg:
             self.conn.commit()
         return cur
 
-    def rows(self, sql, params=()):
-        return self.q(sql, params).fetchall()
+    def fetchall(self, sql: str, params: tuple = ()):
+        cur = self.execute(sql, params)
+        return cur.fetchall()
+
+    def close(self):
+        self.conn.close()
 
 
 def load_config():
@@ -345,7 +354,7 @@ def send_email(config,subject,text_body,html_body):
 
 def main():
     config=load_config(); db=init_db()
-    print('Idman Monitor v5.5 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
+    print('Idman Monitor v5.6 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
     if not db.is_pg: print('WARNING: set DATABASE_URL for reliable memory on Render Cron.', flush=True)
     found,failed=scan(config,db); print(f'Added to pending queue: {add_pending(db,found)}', flush=True)
     pend=pending_items(db,config); print(f'Pending queue size: {len(pend)}', flush=True)

@@ -46,3 +46,8 @@ Fix:
 - Fixes queue behavior: when 50 selected items are deduplicated into fewer email blocks, all 50 selected items are marked as processed, so hidden duplicates do not come again.
 - Items above the 50 limit remain in `pending_items` for the next email.
 - Keeps strict freshness: published date required, and date must be within 60 minutes.
+
+
+## v5.6
+
+Fixes Render PostgreSQL SSL self-signed certificate error by using pg8000 with ssl._create_unverified_context().

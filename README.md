@@ -59,3 +59,12 @@ Fix:
 - Added both DB APIs: `q()/rows()` and `execute()/fetchall()`.
 - Fixes `AttributeError: 'DB' object has no attribute 'q'`.
 - Keeps v5.6 PostgreSQL SSL fix.
+
+
+## v5.8
+
+Only freshness filtering was changed from v5.7:
+- PostgreSQL memory, pending queue, mail sending, cron, DB class, and dedup are unchanged.
+- Freshness window changed from 60 to 90 minutes.
+- Articles without a parsed publication date are allowed once by first_seen timestamp.
+- PostgreSQL memory prevents those no-date items from repeating.

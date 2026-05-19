@@ -238,10 +238,18 @@ def extract_article(source,url,config):
     desc=summarize(desc,2); raw=normalize_text(title+' '+desc)
     if excluded(raw,config) or not az_sport(raw,config): return None
     dt=parse_time(soup,config)
-    if not dt: return None  # strict: no date = skip
-    if not recent(dt,config): return None
+    first_seen=datetime.now(ZoneInfo(config['settings']['timezone']))
+
+    # v5.8: softer freshness filter.
+    # If date exists, keep freshness window.
+    # If date is missing, allow once by first_seen; PostgreSQL memory prevents repeats.
+    if dt:
+        if not recent(dt,config): return None
+    else:
+        dt=first_seen
+
     st=sport_type(raw)
-    return NewsItem(source,url,title,desc,dt,datetime.now(ZoneInfo(config['settings']['timezone'])),st,topic(st),priority(raw),raw)
+    return NewsItem(source,url,title,desc,dt,first_seen,st,topic(st),priority(raw),raw)
 
 def sent_or_pending(db,item,config):
     key=semantic_key(item.title); cutoff=(datetime.now(timezone.utc)-timedelta(hours=int(config['settings'].get('sent_memory_hours',72)))).isoformat()
@@ -359,7 +367,7 @@ def send_email(config,subject,text_body,html_body):
 
 def main():
     config=load_config(); db=init_db()
-    print('Idman Monitor v5.7 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
+    print('Idman Monitor v5.8 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
     if not db.is_pg: print('WARNING: set DATABASE_URL for reliable memory on Render Cron.', flush=True)
     found,failed=scan(config,db); print(f'Added to pending queue: {add_pending(db,found)}', flush=True)
     pend=pending_items(db,config); print(f'Pending queue size: {len(pend)}', flush=True)

@@ -51,3 +51,11 @@ Fix:
 ## v5.6
 
 Fixes Render PostgreSQL SSL self-signed certificate error by using pg8000 with ssl._create_unverified_context().
+
+
+## v5.7
+
+Fix:
+- Added both DB APIs: `q()/rows()` and `execute()/fetchall()`.
+- Fixes `AttributeError: 'DB' object has no attribute 'q'`.
+- Keeps v5.6 PostgreSQL SSL fix.

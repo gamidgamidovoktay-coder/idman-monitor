@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import gc, hashlib, html, os, re, smtplib, sqlite3, warnings
+import gc, hashlib, html, os, re, smtplib, sqlite3, ssl, warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -63,21 +63,34 @@ class NewsItem:
 
 class DB:
     def __init__(self):
-        self.is_pg = bool(DATABASE_URL and pg8000)
+        self.is_pg = bool(DATABASE_URL and pgdb)
         if self.is_pg:
-            self.conn = pgdb.connect(user=parsed.username, password=parsed.password, host=parsed.hostname, port=parsed.port or 5432, database=parsed.path.lstrip('/'), ssl_context=True)
+            parsed = urlparse(DATABASE_URL)
+            ssl_ctx = ssl.create_default_context()
+            self.conn = pgdb.connect(
+                user=parsed.username,
+                password=parsed.password,
+                host=parsed.hostname,
+                port=parsed.port or 5432,
+                database=parsed.path.lstrip("/"),
+                ssl_context=ssl_ctx,
+            )
             self.conn.autocommit = True
         else:
             self.conn = sqlite3.connect(DB_PATH)
+
     def q(self, sql, params=()):
         if self.is_pg:
-            sql = sql.replace('?', '%s')
-            # SQLite-compatible ON CONFLICT syntax below works in Postgres for our usage.
-        cur = self.conn.cursor(); cur.execute(sql, params)
-        if not self.is_pg: self.conn.commit()
+            sql = sql.replace("?", "%s")
+        cur = self.conn.cursor()
+        cur.execute(sql, params)
+        if not self.is_pg:
+            self.conn.commit()
         return cur
+
     def rows(self, sql, params=()):
         return self.q(sql, params).fetchall()
+
 
 def load_config():
     with CONFIG_PATH.open('r', encoding='utf-8') as f: return yaml.safe_load(f)
@@ -332,7 +345,7 @@ def send_email(config,subject,text_body,html_body):
 
 def main():
     config=load_config(); db=init_db()
-    print('Idman Monitor v5.2 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
+    print('Idman Monitor v5.5 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
     if not db.is_pg: print('WARNING: set DATABASE_URL for reliable memory on Render Cron.', flush=True)
     found,failed=scan(config,db); print(f'Added to pending queue: {add_pending(db,found)}', flush=True)
     pend=pending_items(db,config); print(f'Pending queue size: {len(pend)}', flush=True)
@@ -340,6 +353,8 @@ def main():
     if not selected:
         print('No new items. No email sent.', flush=True); return 0
     groups=dedupe(selected); subject,text_body,html_body=build_email(config,groups,failed); send_email(config,subject,text_body,html_body)
-    mark_sent(db,[g[0] for g in groups],config); print(f'Sent digest with {len(groups)} news items.', flush=True); return 0
+    # Mark every selected pending item as processed, including near-duplicates hidden inside groups.
+    # Items over the 50-limit stay in pending_items and will be considered in the next email.
+    mark_sent(db,selected,config); print(f'Sent digest with {len(groups)} news items.', flush=True); return 0
 
 if __name__=='__main__': raise SystemExit(main())

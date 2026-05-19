@@ -23,3 +23,26 @@
 Fix:
 - Removed invalid `pg8000.connect(DATABASE_URL, sslmode='require')`.
 - Now parses DATABASE_URL and connects with `pg8000.dbapi.connect(..., ssl_context=True)`.
+
+
+## v5.3
+
+Fix:
+- Corrected remaining variable reference from `pg8000` to `pgdb`.
+- Fixes `NameError: name 'pg8000' is not defined`.
+
+
+## v5.4
+
+Fix:
+- Исправлена ошибка v5.3: теперь `DATABASE_URL` корректно разбирается через `urlparse`.
+- Подключение к PostgreSQL идёт через `pg8000.dbapi` и SSL context.
+- Проверено: нет `psycopg2`, нет `sslmode`, нет старого `pg8000.connect(DATABASE_URL, ...)`.
+
+
+## v5.5 final check
+
+- Same PostgreSQL driver fix as v5.4 (`pg8000.dbapi` + SSL context).
+- Fixes queue behavior: when 50 selected items are deduplicated into fewer email blocks, all 50 selected items are marked as processed, so hidden duplicates do not come again.
+- Items above the 50 limit remain in `pending_items` for the next email.
+- Keeps strict freshness: published date required, and date must be within 60 minutes.

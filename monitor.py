@@ -18,9 +18,9 @@ from rapidfuzz import fuzz
 from zoneinfo import ZoneInfo
 
 try:
-    import psycopg2
+    import pg8000
 except Exception:
-    psycopg2 = None
+    pg8000 = None
 
 warnings.filterwarnings('ignore', category=XMLParsedAsHTMLWarning)
 
@@ -63,9 +63,9 @@ class NewsItem:
 
 class DB:
     def __init__(self):
-        self.is_pg = bool(DATABASE_URL and psycopg2)
+        self.is_pg = bool(DATABASE_URL and pg8000)
         if self.is_pg:
-            self.conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            self.conn = pg8000.connect(DATABASE_URL, sslmode='require')
             self.conn.autocommit = True
         else:
             self.conn = sqlite3.connect(DB_PATH)

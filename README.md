@@ -9,3 +9,10 @@
 - Final scan отсутствует.
 
 Важно: для Render Cron нужен DATABASE_URL, иначе SQLite может не сохраняться между запусками.
+
+
+## v5.1
+
+Исправление PostgreSQL-драйвера:
+- `psycopg2-binary` заменён на `pg8000`, потому что `psycopg2-binary` падал в Render на Python 3.14.
+- Остальная логика v5 сохранена: постоянная память, очередь pending, окно 60 минут, без Final scan.

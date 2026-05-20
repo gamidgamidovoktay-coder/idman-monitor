@@ -68,3 +68,15 @@ Only freshness filtering was changed from v5.7:
 - Freshness window changed from 60 to 90 minutes.
 - Articles without a parsed publication date are allowed once by first_seen timestamp.
 - PostgreSQL memory prevents those no-date items from repeating.
+
+
+## v5.9 PRO
+
+Targeted source-opening and depth improvement only:
+- PostgreSQL memory, dedup, pending queue, mail sending, and 90-minute freshness window are preserved.
+- Sources are no longer auto-disabled after repeated errors.
+- Each source is tried every cron run.
+- Source opening tries https/http and www/no-www variants.
+- Browser-like headers and longer timeout.
+- Candidate depth increased carefully.
+- General/non-sport categories are still blocked: politics, society, incidents, economy, weather, army, media, world, culture, etc.

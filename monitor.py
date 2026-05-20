@@ -34,10 +34,10 @@ SMTP_APP_PASSWORD = os.getenv('SMTP_APP_PASSWORD','')
 EMAIL_FROM = os.getenv('EMAIL_FROM', SMTP_USER)
 EMAIL_TO = [x.strip() for x in os.getenv('EMAIL_TO','').split(',') if x.strip()]
 
-HEADERS = {'User-Agent':'Mozilla/5.0 (compatible; IdmanMonitor/5.0; +https://idman.biz)','Accept-Language':'az,ru,en;q=0.9'}
+HEADERS = {'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36','Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8','Accept-Language':'az-AZ,az;q=0.9,ru-RU;q=0.8,ru;q=0.7,en-US;q=0.6,en;q=0.5','Cache-Control':'no-cache','Pragma':'no-cache'}
 ARTICLE_PATH_HINTS = ['/news/','/xeber/','/idman_xeberleri/','/post/','/article/','/2025/','/2026/','/az/','/ru/','/a=','/futbol/','/bizim-futbol/']
 SECTION_HINTS = ['sport','idman','futbol','football','basketbol','voleybol','mma','ufc','gules','güləş','judo','cüdo','chess','şahmat']
-BAD_URL_PATTERNS = ['/category/','/categories/','/news/premyer-liqa','/misli','/azerbaycanf','/business/','/economy/','/weather','/army','/media','/science-and-education','/tag/','/author/','/page/','/search','/contact','/about','/reklam','/advert','/privacy']
+BAD_URL_PATTERNS = ['/category/','/categories/','/news/premyer-liqa','/misli','/azerbaycanf','/business/','/economy/','/weather','/army','/media','/science-and-education','/tag/','/author/','/page/','/search','/contact','/about','/reklam','/advert','/privacy','/politics/','/society/','/incident/','/world/','/culture/','/health/','/education/','/analytics/','/siyaset','/cemiyyet','/hadise','/dunya','/medeniyyet','/sehiyye','/iqtisadiyyat','/biznes']
 BAD_TITLE_PATTERNS = ['günün son xəbərləri','hərbi xəbərlər','media xəbərləri','hava haqqında xəbərlər','biznes və iqtisadiyyat xəbərləri','misli premyer liqa |','azərbaycan futbolu »','sportnet.az']
 HIGH = ['transfer','müqavilə','qadağa','danışıqları','qayıda bilər','gedir','ayrıldı','vidalaşdı','keçdi','satıldı','alındı','zədə','zədələn','travma','xəsarət','əməliyyat','millimiz','milli','yığma','sборная','avrokubok','çempionlar liqası','avropa liqası','konfrans liqası','uefa','rəqib','püşk','qalmaqal','skandal','qərar','cəza','fifa','affa','hakim','şikayət','apellyasiya','müsahibə','interview','açıqlama','dedi','bildirdi']
 MEDIUM = ['qalib','məğlub','tur','nəticə','çempionat','kubok','medal','start','yekun','heyət','siyahı','hazırlıq']
@@ -139,7 +139,7 @@ def same_domain(a,b): return urlparse(a).netloc.lower().replace('www.','') == ur
 def bad_url(u): return any(p in u.lower() for p in BAD_URL_PATTERNS)
 def article_url(u): return (not bad_url(u)) and any(h in u.lower() for h in ARTICLE_PATH_HINTS)
 
-def fetch(url, timeout=5):
+def fetch(url, timeout=10):
     try:
         r=requests.get(url,headers=HEADERS,timeout=timeout,allow_redirects=True,stream=True)
         if r.status_code>=400: return None
@@ -154,6 +154,28 @@ def fetch(url, timeout=5):
         return b''.join(chunks).decode(r.encoding or 'utf-8', errors='replace')
     except Exception: return None
 
+def url_variants(url):
+    parsed=urlparse(url)
+    if not parsed.netloc: return [url]
+    host=parsed.netloc
+    bare=host[4:] if host.startswith('www.') else host
+    hosts=[bare,'www.'+bare]
+    schemes=['https','http']
+    path=parsed.path or ''
+    variants=[]
+    for scheme in schemes:
+        for h in hosts:
+            cand=f'{scheme}://{h}{path}'
+            if cand not in variants: variants.append(cand)
+    if url not in variants: variants.insert(0,url)
+    return variants
+
+def fetch_any(url):
+    for cand in url_variants(url):
+        html_text=fetch(cand)
+        if html_text: return html_text,cand
+    return None,url
+
 def extract_links(source, html_text):
     soup=BeautifulSoup(html_text,'html.parser'); links=[]
     for a in soup.find_all('a', href=True):
@@ -164,7 +186,7 @@ def extract_links(source, html_text):
     out=[]; seen=set()
     for u in links:
         if u not in seen: out.append(u); seen.add(u)
-    return out[:18]
+    return out[:36]
 
 def discover_sections(source, html_text):
     soup=BeautifulSoup(html_text,'html.parser'); out=[]; seen=set()
@@ -173,7 +195,7 @@ def discover_sections(source, html_text):
         if not u or not same_domain(source.url,u) or bad_url(u): continue
         if any(h in txt or h in u.lower() for h in SECTION_HINTS) and u!=source.url and u not in seen:
             out.append(u); seen.add(u)
-    return out[:2]
+    return out[:3]
 
 def summarize(text, n=2):
     text=normalize_text(text)
@@ -289,28 +311,35 @@ def record_failure(db,name):
     if rows: db.q('UPDATE failures SET last_failed_at=?, consecutive_days=consecutive_days+1 WHERE source=?',(now_utc(),name))
     else: db.q('INSERT INTO failures(source,last_failed_at,consecutive_days,disabled) VALUES (?,?,1,0)',(name,now_utc()))
 def clear_failure(db,name): db.q('DELETE FROM failures WHERE source=?',(name,))
-def disabled(db): return {r[0] for r in db.rows('SELECT source FROM failures WHERE consecutive_days >= 10',())}
+def disabled(db):
+    # v5.9 PRO: never auto-disable sources; every source is tried every cron run.
+    return set()
+
+
+def disabled_sources(db):
+    # v5.9 PRO: never auto-disable sources; every source is tried every cron run.
+    return set()
 
 def scan(config,db):
     sources=[Source(**s) for s in config['sources']]; dis=disabled(db); found=[]; failed=[]
     for idx,source in enumerate(sources,1):
         print(f'[{idx}/{len(sources)}] Scanning {source.name}: {source.url}', flush=True)
-        if source.name in dis: failed.append(source.name+' (отключён после 10 дней ошибок)'); continue
-        main=fetch(source.url)
+        if source.name in dis: failed.append(source.name+' '); continue
+        main, opened_url = fetch_any(source.url)
         if not main:
             print(f'  FAILED: cannot open {source.name}', flush=True); failed.append(source.name); record_failure(db,source.name); continue
         clear_failure(db,source.name); print('  opened', flush=True)
-        pages=[source.url]+discover_sections(source,main); print(f'  pages to check: {len(pages)}', flush=True)
+        pages=[opened_url]+discover_sections(source,main); print(f'  pages to check: {len(pages)}', flush=True)
         cand=[]
         for p in pages:
-            ph=main if p==source.url else fetch(p)
+            ph=main if p==opened_url else fetch(p)
             if ph: cand.extend(extract_links(source,ph))
         uniq=[]; seen=set()
         for u in cand:
             if u not in seen: uniq.append(u); seen.add(u)
-        print(f'  candidate article links: {len(uniq[:12])}', flush=True)
+        print(f'  candidate article links: {len(uniq[:24])}', flush=True)
         sf=0
-        for u in uniq[:12]:
+        for u in uniq[:24]:
             item=extract_article(source,u,config)
             if item and not sent_or_pending(db,item,config): found.append(item); sf+=1
         print(f'  new relevant items from {source.name}: {sf}', flush=True)
@@ -367,7 +396,7 @@ def send_email(config,subject,text_body,html_body):
 
 def main():
     config=load_config(); db=init_db()
-    print('Idman Monitor v5.8 started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
+    print('Idman Monitor v5.9 PRO started with '+('persistent PostgreSQL memory' if db.is_pg else 'SQLite fallback memory'), flush=True)
     if not db.is_pg: print('WARNING: set DATABASE_URL for reliable memory on Render Cron.', flush=True)
     found,failed=scan(config,db); print(f'Added to pending queue: {add_pending(db,found)}', flush=True)
     pend=pending_items(db,config); print(f'Pending queue size: {len(pend)}', flush=True)
